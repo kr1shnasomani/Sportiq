@@ -5,7 +5,7 @@
 The project is designed for player and ball tracking in tennis. It processes video input to detect court boundaries, track player movements, and map ball trajectories, utilizing computer vision techniques, Mediapipe, and a custom ball detection model for accurate analysis and visualization.
 
 ## Repository Structure:
-The following is the structure of the repository"
+The following is the structure of the repository:
 ```
 Sportiq
 ├── code/
@@ -43,6 +43,7 @@ Sportiq
    - `TraceHeader.py` - line 4, enter the input video path
 
 4. Run the project:
+   
    You will need to run the `CourtDetection.py` script to run thei entire project:
    ```
    /usr/bin/python3 /Users/krishnasomani/Documents/Projects/Sportiq/code/CourtDetection.py
