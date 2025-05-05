@@ -41,8 +41,10 @@ Sportiq
 3. In the following files, replace the path with yours:
    - `CourtDetection.py` - line 13, enter root directory
    - `TraceHeader.py` - line 4, enter the input video path
+  
+4. Download the TrackNet model from **https://raw.githubusercontent.com/hgupt3/TRACE/main/TrackNet/Weights.pth** and rename the model to `TrackNet.pth`
 
-4. Run the project:
+5. Run the project:
    
    You will need to run the `CourtDetection.py` script to run thei entire project:
    ```
