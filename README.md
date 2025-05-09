@@ -54,3 +54,8 @@ Sportiq
 ## Output:
 
 https://github.com/user-attachments/assets/31d239fb-44a8-4906-a2e6-43886348ba5b
+
+## Workflow:
+
+![image](https://github.com/user-attachments/assets/3a72bb94-7b6e-46e7-baf8-770a92bd4780)
+
