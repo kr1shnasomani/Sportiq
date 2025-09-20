@@ -30,8 +30,8 @@ export VITE_DEV_PORT="$FRONTEND_PORT"
 # Start frontend
 (
   cd "$ROOT_DIR/frontend"
-  chmod +x run.sh
-  VITE_DEV_PORT="$FRONTEND_PORT" VITE_BACKEND_URL="$VITE_BACKEND_URL" ./run.sh &
+  chmod +x run_frontend.sh
+  VITE_DEV_PORT="$FRONTEND_PORT" VITE_BACKEND_URL="$VITE_BACKEND_URL" ./run_frontend.sh &
   echo "Frontend starting on http://localhost:${FRONTEND_PORT}"
 )
 
