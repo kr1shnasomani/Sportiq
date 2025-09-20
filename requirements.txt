@@ -1,5 +1,0 @@
-opencv-python
-mediapipe
-numpy
-torch
-pillow

@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+.pytest_cache/
+.venv/
+
+# Node
+node_modules/
+
+# macOS
+.DS_Store
+
+# Project data/model/output (root-level)
+dataset/
+output/
+
+# Allow tiny committed samples if desired
+!dataset/sample/**

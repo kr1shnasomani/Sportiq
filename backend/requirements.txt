@@ -1,0 +1,9 @@
+opencv-python
+mediapipe
+numpy
+torch
+pillow
+fastapi
+uvicorn[standard]
+python-multipart
+pydantic-settings>=2.0
