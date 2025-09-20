@@ -1,6 +1,8 @@
 opencv-python
-mediapipe
-numpy
+mediapipe==0.10.14
+numpy==1.26.4
+jax==0.4.13
+jaxlib==0.4.13
 torch
 pillow
 fastapi
