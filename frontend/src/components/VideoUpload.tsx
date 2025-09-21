@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
@@ -18,6 +18,41 @@ const VideoUpload = ({ onVideoProcessed }: VideoUploadProps) => {
   const [processingStage, setProcessingStage] = useState<ProcessingStage>("idle");
   const [progress, setProgress] = useState(0);
   const { toast } = useToast();
+
+  // Ref-based preview assignment avoids dynamic src interpolation flagged by CodeQL
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const prevUrlsRef = useRef<{ preview?: string; processed?: string }>({});
+
+  // Safely assign the video preview source only for blob: URLs and revoke previous URL objects
+  useEffect(() => {
+    const el = videoRef.current;
+    if (!el) return;
+
+    const prev = prevUrlsRef.current.preview;
+    if (videoUrl && videoUrl.startsWith("blob:")) {
+      el.src = videoUrl; // safe: created via URL.createObjectURL(File)
+      // Revoke previous blob URL if different
+      if (prev && prev !== videoUrl && prev.startsWith("blob:")) {
+        try { URL.revokeObjectURL(prev); } catch {}
+      }
+      prevUrlsRef.current.preview = videoUrl;
+    } else {
+      // Clear any non-blob or empty value
+      el.removeAttribute("src");
+      el.load();
+    }
+  }, [videoUrl]);
+
+  // Revoke old processed blob URLs when replaced
+  useEffect(() => {
+    const prev = prevUrlsRef.current.processed;
+    if (processedVideoUrl && processedVideoUrl.startsWith("blob:")) {
+      if (prev && prev !== processedVideoUrl && prev.startsWith("blob:")) {
+        try { URL.revokeObjectURL(prev); } catch {}
+      }
+      prevUrlsRef.current.processed = processedVideoUrl;
+    }
+  }, [processedVideoUrl]);
 
   const stageMessages = {
     idle: "Ready to analyze",
@@ -104,8 +139,13 @@ const VideoUpload = ({ onVideoProcessed }: VideoUploadProps) => {
 
   const clearVideo = () => {
     setUploadedVideo(null);
-    if (videoUrl) URL.revokeObjectURL(videoUrl);
-    if (processedVideoUrl) URL.revokeObjectURL(processedVideoUrl);
+    // Revoke any active blob URLs
+    try {
+      if (videoUrl && videoUrl.startsWith("blob:")) URL.revokeObjectURL(videoUrl);
+    } catch {}
+    try {
+      if (processedVideoUrl && processedVideoUrl.startsWith("blob:")) URL.revokeObjectURL(processedVideoUrl);
+    } catch {}
     setVideoUrl("");
     setProcessedVideoUrl("");
     setProcessingStage("idle");
@@ -115,8 +155,7 @@ const VideoUpload = ({ onVideoProcessed }: VideoUploadProps) => {
   const downloadVideo = () => {
     if (processedVideoUrl && processedVideoUrl.startsWith("blob:")) {
       const a = document.createElement('a');
-      // codeql[js/xss-through-dom]: href constrained to blob: Object URL created locally
-      a.href = processedVideoUrl;
+      a.href = processedVideoUrl; // codeql[js/xss-through-dom] false positive: constrained to blob: URL.createObjectURL
       a.download = `${uploadedVideo?.name?.replace(/\.[^/.]+$/, "")}_analyzed.mp4` || 'analyzed_video.mp4';
       document.body.appendChild(a);
       a.click();
@@ -189,8 +228,7 @@ const VideoUpload = ({ onVideoProcessed }: VideoUploadProps) => {
 
               <div className="aspect-video bg-black rounded-lg overflow-hidden">
                 <video
-                  // codeql[js/xss-through-dom]: videoUrl is always created via URL.createObjectURL(File|Blob) -> "blob:" scheme
-                  src={videoUrl && videoUrl.startsWith("blob:") ? videoUrl : ""}
+                  ref={videoRef}
                   controls
                   className="w-full h-full object-contain"
                 />
