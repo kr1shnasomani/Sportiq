@@ -4,7 +4,8 @@ import argparse
 from pathlib import Path
 from mediapipe import solutions
 from cv2 import VideoCapture, cvtColor, Canny, line, COLOR_BGR2GRAY, HoughLinesP
-from cv2 import threshold, THRESH_BINARY, dilate, floodFill, circle, HoughLines, erode, rectangle, VideoWriter, VideoWriter_fourcc
+from cv2 import threshold, THRESH_BINARY, THRESH_OTSU, dilate, floodFill, circle, HoughLines, erode, rectangle, VideoWriter, VideoWriter_fourcc
+from cv2 import findContours, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE, contourArea, arcLength
 
 from trace_header import findIntersection, calculatePixels
 from court_mapping import courtMap, showLines, showPoint, heightP, widthP, givePoint
@@ -44,6 +45,45 @@ height = int(video.get(4))
 fourcc = VideoWriter_fourcc(*'mp4v')
 clip = VideoWriter(OUTPUT_VIDEO_PATH,fourcc,25.0,(widthP,heightP))
 processedFrame = None
+
+def _order_points_clockwise(pts):
+    # pts: Nx2 array-like
+    import numpy as _np
+    pts = _np.array(pts, dtype=_np.float32)
+    s = pts.sum(axis=1)
+    diff = _np.diff(pts, axis=1)[:,0]
+    tl = pts[s.argmin()]
+    br = pts[s.argmax()]
+    tr = pts[diff.argmin()]
+    bl = pts[diff.argmax()]
+    return [tl.tolist(), tr.tolist(), bl.tolist(), br.tolist()]
+
+def _find_court_corners_by_contours(edge_img, min_area_ratio=0.05):
+    # edge_img should be a binary/edge image
+    try:
+        contours, _ = findContours(edge_img, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE)
+    except ValueError:
+        # Older OpenCV returns (image, contours, hierarchy)
+        _, contours, _ = findContours(edge_img, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None
+    H, W = edge_img.shape[:2]
+    total_area = H * W
+    # Sort largest first
+    contours = sorted(contours, key=contourArea, reverse=True)
+    for cnt in contours[:10]:
+        area = contourArea(cnt)
+        if area < min_area_ratio * total_area:
+            continue
+        peri = arcLength(cnt, True)
+        # Try multiple approx strengths
+        for eps_ratio in (0.02, 0.03, 0.05, 0.08):
+            from cv2 import approxPolyDP
+            approx = approxPolyDP(cnt, eps_ratio * peri, True)
+            if len(approx) == 4:
+                pts = approx.reshape(4, 2).tolist()
+                return _order_points_clockwise(pts)
+    return None
 
 class crop1:
     x: float = 50/100
@@ -117,45 +157,56 @@ while video.isOpened():
     canny = Canny(bw, 100, 200)
     
     hPLines = HoughLinesP(canny, 1, pi/180, threshold=150, minLineLength=100, maxLineGap=10)
-    intersectNum = zeros((len(hPLines),2))
-    i = 0
-    for hPLine1 in hPLines:
-        Line1x1, Line1y1, Line1x2, Line1y2 = hPLine1[0]
-        Line1 = [[Line1x1,Line1y1],[Line1x2,Line1y2]]
-        for hPLine2 in hPLines:
-            Line2x1, Line2y1, Line2x2, Line2y2 = hPLine2[0]
-            Line2 = [[Line2x1,Line2y1],[Line2x2,Line2y2]]
-            if Line1 is Line2:
-                continue
-            if Line1x1>Line1x2:
-                temp = Line1x1
-                Line1x1 = Line1x2
-                Line1x2 = temp
-                
-            if Line1y1>Line1y2:
-                temp = Line1y1
-                Line1y1 = Line1y2
-                Line1y2 = temp
-                
-            intersect = findIntersection(Line1, Line2, Line1x1-200, Line1y1-200, Line1x2+200, Line1y2+200)
-            if intersect is not None:
-                intersectNum[i][0] += 1
-        intersectNum[i][1] = i
-        i += 1
-
-    i = p = 0
+    if hPLines is None:
+        print("[court_detection] HoughLinesP: 0 lines detected")
+    else:
+        print(f"[court_detection] HoughLinesP: {len(hPLines)} lines detected")
+    # Prepare morphological maps regardless of line detection outcome
     dilation = dilate(bw, ones((5, 5), uint8), iterations=1)
     nonRectArea = dilation.copy()
-    intersectNum = intersectNum[(-intersectNum)[:, 0].argsort()]
-    for hPLine in hPLines:
-        x1,y1,x2,y2 = hPLine[0]
-        for p in range(8):
-            if (i==intersectNum[p][1]) and (intersectNum[i][0]>0):
-                floodFill(nonRectArea, zeros((height+2, width+2), uint8), (x1, y1), 1) 
-                floodFill(nonRectArea, zeros((height+2, width+2), uint8), (x2, y2), 1) 
-        i+=1
-    dilation[where(nonRectArea == 255)] = 0
-    dilation[where(nonRectArea == 1)] = 255
+    if hPLines is not None and len(hPLines) > 0:
+        intersectNum = zeros((len(hPLines),2))
+        i = 0
+        for hPLine1 in hPLines:
+            Line1x1, Line1y1, Line1x2, Line1y2 = hPLine1[0]
+            Line1 = [[Line1x1,Line1y1],[Line1x2,Line1y2]]
+            for hPLine2 in hPLines:
+                Line2x1, Line2y1, Line2x2, Line2y2 = hPLine2[0]
+                Line2 = [[Line2x1,Line2y1],[Line2x2,Line2y2]]
+                if Line1 is Line2:
+                    continue
+                if Line1x1>Line1x2:
+                    temp = Line1x1
+                    Line1x1 = Line1x2
+                    Line1x2 = temp
+                
+                if Line1y1>Line1y2:
+                    temp = Line1y1
+                    Line1y1 = Line1y2
+                    Line1y2 = temp
+                
+                intersect = findIntersection(Line1, Line2, Line1x1-200, Line1y1-200, Line1x2+200, Line1y2+200)
+                if intersect is not None:
+                    intersectNum[i][0] += 1
+            intersectNum[i][1] = i
+            i += 1
+
+        # Sort by intersection count (desc)
+        intersectNum = intersectNum[(-intersectNum)[:, 0].argsort()]
+        # Flood fill only for the top-N lines available
+        topN = min(8, len(intersectNum))
+        i = 0
+        for hPLine in hPLines:
+            x1,y1,x2,y2 = hPLine[0]
+            for p in range(topN):
+                # Use the sorted row's count; guard against OOB
+                if (i == intersectNum[p][1]) and (intersectNum[p][0] > 0):
+                    floodFill(nonRectArea, zeros((height+2, width+2), uint8), (x1, y1), 1) 
+                    floodFill(nonRectArea, zeros((height+2, width+2), uint8), (x2, y2), 1) 
+            i += 1
+        dilation[where(nonRectArea == 255)] = 0
+        dilation[where(nonRectArea == 1)] = 255
+    # Proceed with erosion and edge detection
     eroded = erode(dilation, ones((5, 5), uint8)) 
     cannyMain = Canny(eroded, 90, 100)
     
@@ -169,73 +220,111 @@ while video.isOpened():
     yFTop = height
     yFBottom = 0
     
+    # Try multiple strategies to detect strong court lines
     hLines = HoughLines(cannyMain, 2, pi/180, 300)
-    for hLine in hLines:
-        for rho,theta in hLine:
-            a = cos(theta)
-            b = sin(theta)
-            x0 = a*rho
-            y0 = b*rho
-            x1 = int(x0 + width*(-b))
-            y1 = int(y0 + width*(a))
-            x2 = int(x0 - width*(-b))
-            y2 = int(y0 - width*(a))
-            
-            intersectxF = findIntersection(axis.bottom, [[x1,y1],[x2,y2]], -extraLen, 0, width+extraLen, height)
-            intersectyO = findIntersection(axis.left, [[x1,y1],[x2,y2]], -extraLen, 0, width+extraLen, height)
-            intersectxO = findIntersection(axis.top, [[x1,y1],[x2,y2]], -extraLen, 0, width+extraLen, height)
-            intersectyF = findIntersection(axis.right, [[x1,y1],[x2,y2]], -extraLen, 0, width+extraLen, height)
-            
-            if (intersectxO is None) and (intersectxF is None) and (intersectyO is None) and (intersectyF is None):
-                continue
-            
-            if intersectxO is not None:
-                if intersectxO[0] < xOLeft:
-                    xOLeft = intersectxO[0]
-                    xOLeftLine = [[x1,y1],[x2,y2]]
-                if intersectxO[0] > xORight:
-                    xORight = intersectxO[0]
-                    xORightLine = [[x1,y1],[x2,y2]]
-            if intersectyO is not None:
-                if intersectyO[1] < yOTop:
-                    yOTop = intersectyO[1]
-                    yOTopLine = [[x1,y1],[x2,y2]]
-                if intersectyO[1] > yOBottom:
-                    yOBottom = intersectyO[1]
-                    yOBottomLine = [[x1,y1],[x2,y2]]
+    if hLines is None or len(hLines) == 0:
+        print("[court_detection] HoughLines primary failed. Trying threshold 200…")
+        hLines = HoughLines(cannyMain, 1, pi/180, 200)
+    if hLines is None or len(hLines) == 0:
+        # Otsu-based binarization fallback
+        print("[court_detection] HoughLines secondary failed. Trying Otsu+Canny fallback…")
+        bw_otsu = threshold(gry, 0, 255, THRESH_BINARY+THRESH_OTSU)[1]
+        eroded_o = erode(dilate(bw_otsu, ones((5, 5), uint8), iterations=1), ones((5, 5), uint8))
+        canny_o = Canny(eroded_o, 80, 120)
+        hLines = HoughLines(canny_o, 1, pi/180, 150)
+    if hLines is None:
+        print("[court_detection] HoughLines: 0 lines detected (all attempts)")
+    points_computed = False
+    if hLines is not None and len(hLines) > 0:
+        for hLine in hLines:
+            for rho,theta in hLine:
+                a = cos(theta)
+                b = sin(theta)
+                x0 = a*rho
+                y0 = b*rho
+                x1 = int(x0 + width*(-b))
+                y1 = int(y0 + width*(a))
+                x2 = int(x0 - width*(-b))
+                y2 = int(y0 - width*(a))
+                
+                intersectxF = findIntersection(axis.bottom, [[x1,y1],[x2,y2]], -extraLen, 0, width+extraLen, height)
+                intersectyO = findIntersection(axis.left, [[x1,y1],[x2,y2]], -extraLen, 0, width+extraLen, height)
+                intersectxO = findIntersection(axis.top, [[x1,y1],[x2,y2]], -extraLen, 0, width+extraLen, height)
+                intersectyF = findIntersection(axis.right, [[x1,y1],[x2,y2]], -extraLen, 0, width+extraLen, height)
+                
+                if (intersectxO is None) and (intersectxF is None) and (intersectyO is None) and (intersectyF is None):
+                    continue
+                
+                if intersectxO is not None:
+                    if intersectxO[0] < xOLeft:
+                        xOLeft = intersectxO[0]
+                        xOLeftLine = [[x1,y1],[x2,y2]]
+                    if intersectxO[0] > xORight:
+                        xORight = intersectxO[0]
+                        xORightLine = [[x1,y1],[x2,y2]]
+                if intersectyO is not None:
+                    if intersectyO[1] < yOTop:
+                        yOTop = intersectyO[1]
+                        yOTopLine = [[x1,y1],[x2,y2]]
+                    if intersectyO[1] > yOBottom:
+                        yOBottom = intersectyO[1]
+                        yOBottomLine = [[x1,y1],[x2,y2]]
                     
-            if intersectxF is not None:
-                if intersectxF[0] < xFLeft:
-                    xFLeft = intersectxF[0]
-                    xFLeftLine = [[x1,y1],[x2,y2]]
-                if intersectxF[0] > xFRight:
-                    xFRight = intersectxF[0]
-                    xFRightLine = [[x1,y1],[x2,y2]]
-            if intersectyF is not None:
-                if intersectyF[1] < yFTop:
-                    yFTop = intersectyF[1]
-                    yFTopLine = [[x1,y1],[x2,y2]]
-                if intersectyF[1] > yFBottom:
-                    yFBottom = intersectyF[1]
-                    yFBottomLine = [[x1,y1],[x2,y2]]
+                if intersectxF is not None:
+                    if intersectxF[0] < xFLeft:
+                        xFLeft = intersectxF[0]
+                        xFLeftLine = [[x1,y1],[x2,y2]]
+                    if intersectxF[0] > xFRight:
+                        xFRight = intersectxF[0]
+                        xFRightLine = [[x1,y1],[x2,y2]]
+                if intersectyF is not None:
+                    if intersectyF[1] < yFTop:
+                        yFTop = intersectyF[1]
+                        yFTopLine = [[x1,y1],[x2,y2]]
+                    if intersectyF[1] > yFBottom:
+                        yFBottom = intersectyF[1]
+                        yFBottomLine = [[x1,y1],[x2,y2]]
 
-    yOTopLine[0][1] = yOTopLine[0][1]+4
-    yOTopLine[1][1] = yOTopLine[1][1]+4
-    
-    yFTopLine[0][1] = yFTopLine[0][1]+4
-    yFTopLine[1][1] = yFTopLine[1][1]+4
-    
-    topLeftP = findIntersection(xOLeftLine, yOTopLine, -extraLen, 0, width+extraLen, height)
-    topRightP = findIntersection(xORightLine, yFTopLine, -extraLen, 0, width+extraLen, height)
-    bottomLeftP = findIntersection(xFLeftLine, yOBottomLine, -extraLen, 0, width+extraLen, height)
-    bottomRightP = findIntersection(xFRightLine, yFBottomLine, -extraLen, 0, width+extraLen, height)
-    
-    if (not(topLeftP == NtopLeftP)) and (not(topRightP == NtopRightP)) and (not(bottomLeftP == NbottomLeftP)) and (not(bottomRightP == NbottomRightP)):
-        
-        NtopLeftP = topLeftP
-        NtopRightP = topRightP
-        NbottomLeftP = bottomLeftP
-        NbottomRightP = bottomRightP
+        try:
+            yOTopLine[0][1] = yOTopLine[0][1]+4
+            yOTopLine[1][1] = yOTopLine[1][1]+4
+            
+            yFTopLine[0][1] = yFTopLine[0][1]+4
+            yFTopLine[1][1] = yFTopLine[1][1]+4
+            
+            topLeftP = findIntersection(xOLeftLine, yOTopLine, -extraLen, 0, width+extraLen, height)
+            topRightP = findIntersection(xORightLine, yFTopLine, -extraLen, 0, width+extraLen, height)
+            bottomLeftP = findIntersection(xFLeftLine, yOBottomLine, -extraLen, 0, width+extraLen, height)
+            bottomRightP = findIntersection(xFRightLine, yFBottomLine, -extraLen, 0, width+extraLen, height)
+            if (topLeftP is not None) and (topRightP is not None) and (bottomLeftP is not None) and (bottomRightP is not None):
+                points_computed = True
+                print("[court_detection] Court corners computed via Hough intersections.")
+        except Exception:
+            points_computed = False
+
+    if not points_computed:
+        # Fallback: use contours to find a big 4-point polygon
+        contour_pts = _find_court_corners_by_contours(cannyMain)
+        if contour_pts is None:
+            # As a last try, use Otsu-binarized edges
+            try:
+                bw_otsu2 = threshold(gry, 0, 255, THRESH_BINARY+THRESH_OTSU)[1]
+                eroded2 = erode(dilate(bw_otsu2, ones((5,5), uint8), iterations=1), ones((5,5), uint8))
+                canny2 = Canny(eroded2, 80, 120)
+                contour_pts = _find_court_corners_by_contours(canny2)
+            except Exception:
+                contour_pts = None
+        if contour_pts is not None:
+            topLeftP, topRightP, bottomLeftP, bottomRightP = contour_pts
+            points_computed = True
+            print("[court_detection] Court corners computed via contour fallback.")
+
+    if points_computed:
+        if (not(topLeftP == NtopLeftP)) and (not(topRightP == NtopRightP)) and (not(bottomLeftP == NbottomLeftP)) and (not(bottomRightP == NbottomRightP)):
+            NtopLeftP = topLeftP
+            NtopRightP = topRightP
+            NbottomLeftP = bottomLeftP
+            NbottomRightP = bottomRightP
 
     handPointsPrev = handPoints
     feetPoints, handPoints, nosePoints = bodyMap(frame, body1.pose, body2.pose, crop1, crop2)
@@ -272,13 +361,18 @@ while video.isOpened():
         circleRadiusBody2 = int(0.6 * euclideanDistance(nosePoints[1], [body2.x, body2.y]))
         
         # Distorting frame and outputting results
-        processedFrame, M = courtMap(frame, NtopLeftP, NtopRightP, NbottomLeftP, NbottomRightP)
-        # Create black background
-        rectangle(processedFrame, (0,0),(967,1585),(188,145,103),2000)
-        processedFrame = showLines(processedFrame)
+        M = None
+        if all(pt is not None for pt in [NtopLeftP, NtopRightP, NbottomLeftP, NbottomRightP]):
+            processedFrame, M = courtMap(frame, NtopLeftP, NtopRightP, NbottomLeftP, NbottomRightP)
+            # Log homography success
+            print("[court_detection] Homography computed; drawing court + players.")
+            # Create background and draw court
+            rectangle(processedFrame, (0,0),(967,1585),(188,145,103),2000)
+            processedFrame = showLines(processedFrame)
 
-        processedFrame = showPoint(processedFrame, M, [body1.xAvg,body1.yAvg])
-        processedFrame = showPoint(processedFrame, M, [body2.xAvg,body2.yAvg])
+            # Draw player positions if homography available
+            processedFrame = showPoint(processedFrame, M, [body1.xAvg,body1.yAvg])
+            processedFrame = showPoint(processedFrame, M, [body2.xAvg,body2.yAvg])
         
         ballPrev = ball
         ball_detector.detect_ball(frame)
@@ -297,13 +391,15 @@ while video.isOpened():
                 if withinCircle(handPoints[1], circleRadiusBody1, ball):
                     if minDist1>euclideanDistance(handPoints[1], ball):
                         minDist1 = euclideanDistance(handPoints[1], ball)
-                        coords.append((ball, givePoint(M, ball), givePoint(M, (body1.x,body1.y)), counter))
+                        if M is not None:
+                            coords.append((ball, givePoint(M, ball), givePoint(M, (body1.x,body1.y)), counter))
                 else:
                     minDist1 = circleRadiusBody1
                 if withinCircle(handPoints[3], circleRadiusBody2, ball):
                     if minDist2>euclideanDistance(handPoints[3], ball):
                         minDist2 = euclideanDistance(handPoints[3], ball)
-                        coords.append((ball, givePoint(M, ball), givePoint(M, (body2.x,body2.y)), counter))
+                        if M is not None:
+                            coords.append((ball, givePoint(M, ball), givePoint(M, (body2.x,body2.y)), counter))
                 else:
                     minDist2 = circleRadiusBody2
 
@@ -315,7 +411,8 @@ while video.isOpened():
                         within = True
                     else:
                         within = False
-                    velocities.append(([xVelocity,yVelocity], counter, givePoint(M, ball), within))
+                    if M is not None:
+                        velocities.append(([xVelocity,yVelocity], counter, givePoint(M, ball), within))
                         
 
         if len(coords)>=2:
@@ -324,6 +421,21 @@ while video.isOpened():
 
         for i in range(len(coords)):
             circle(frame, coords[i][0], 4, (0,0,255), 4)
+
+    # Always produce a frame: if processing failed this iteration, draw a blank court
+    if processedFrame is None:
+        try:
+            # Create a neutral background court canvas so the video isn't empty
+            processedFrame = zeros((heightP, widthP, 3), uint8)
+            rectangle(processedFrame, (0,0),(967,1585),(188,145,103),2000)
+            processedFrame = showLines(processedFrame)
+        except Exception:
+            # As a last resort, attempt to resize/fit the original frame into the court canvas size
+            try:
+                from cv2 import resize
+                processedFrame = resize(frame, (widthP, heightP))
+            except Exception:
+                processedFrame = None
 
     if processedFrame is not None:    
         clip.write(processedFrame)
@@ -334,7 +446,7 @@ while video.isOpened():
         if waitKey(1) == ord("q"):
             break
 
-if ball is not None:
+if ball is not None and 'M' in locals() and M is not None:
     coords.append((ball, givePoint(M, ball), givePoint(M, ball), lastSeen))
 
 clip.release()
@@ -366,7 +478,8 @@ while len(coords)>1:
         y = int(location[1]+((i-time)/timeDiff)*(coords[0][2][1]-location[1]))
         ballArray.append(((x,y), i))       
 
-ballArray.append(((coords[0][1][0], coords[0][2][1]), coords[0][3]))
+if len(coords) > 0:
+    ballArray.append(((coords[0][1][0], coords[0][2][1]), coords[0][3]))
 
 video = VideoCapture(OUTPUT_VIDEO_PATH)
 clip = VideoWriter(FINAL_OUTPUT_PATH, fourcc, 25.0, (widthP, heightP))
@@ -378,21 +491,21 @@ while video.isOpened():
         break
     
     counter += 1
+    if len(ballArray) > 0:
+        for i in range(len(ballArray)):
+            if counter == ballArray[i][1]:
+                circle(frame, (ballArray[i][0]), 4,(0,255,255),3)
+                break
 
-    for i in range(len(ballArray)):
-        if counter == ballArray[i][1]:
-            circle(frame, (ballArray[i][0]), 4,(0,255,255),3)
-            break
+        if counter == ballArray[0][1]:
+            writeFlag = True
 
-    if counter == ballArray[0][1]:
-        writeFlag = True
-
-    if ballArray[-1][1] == counter:
-        writeFlag = False
-        
-    if (writeFlag):
-        index = counter - ballArray[0][1]
-        circle(frame, (ballArray[index][0]), 2,(0,255,255),3)
+        if ballArray[-1][1] == counter:
+            writeFlag = False
+            
+        if (writeFlag):
+            index = counter - ballArray[0][1]
+            circle(frame, (ballArray[index][0]), 2,(0,255,255),3)
     
     clip.write(frame)
 

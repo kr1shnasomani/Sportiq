@@ -104,18 +104,18 @@ const VideoUpload = ({ onVideoProcessed }: VideoUploadProps) => {
 
   const clearVideo = () => {
     setUploadedVideo(null);
+    if (videoUrl) URL.revokeObjectURL(videoUrl);
+    if (processedVideoUrl) URL.revokeObjectURL(processedVideoUrl);
     setVideoUrl("");
     setProcessedVideoUrl("");
     setProcessingStage("idle");
     setProgress(0);
-    if (videoUrl) {
-      URL.revokeObjectURL(videoUrl);
-    }
   };
 
   const downloadVideo = () => {
-    if (processedVideoUrl) {
+    if (processedVideoUrl && processedVideoUrl.startsWith("blob:")) {
       const a = document.createElement('a');
+      // codeql[js/xss-through-dom]: href constrained to blob: Object URL created locally
       a.href = processedVideoUrl;
       a.download = `${uploadedVideo?.name?.replace(/\.[^/.]+$/, "")}_analyzed.mp4` || 'analyzed_video.mp4';
       document.body.appendChild(a);
@@ -188,9 +188,10 @@ const VideoUpload = ({ onVideoProcessed }: VideoUploadProps) => {
               </div>
 
               <div className="aspect-video bg-black rounded-lg overflow-hidden">
-                <video 
-                  src={videoUrl} 
-                  controls 
+                <video
+                  // codeql[js/xss-through-dom]: videoUrl is always created via URL.createObjectURL(File|Blob) -> "blob:" scheme
+                  src={videoUrl && videoUrl.startsWith("blob:") ? videoUrl : ""}
+                  controls
                   className="w-full h-full object-contain"
                 />
               </div>
